@@ -189,6 +189,45 @@ class NormalizeFast8DirectorOutputsTest(unittest.TestCase):
         self.assertFalse(content_output.exists())
         self.assertFalse(layout_output.exists())
 
+    def test_optional_bilingual_presentation_is_preserved_and_validated(self) -> None:
+        content = self.base_content()
+        content["language"] = "mixed"
+        content["display_required"] = [
+            "一个品牌、一个公司",
+            "One Brand, One Company",
+        ]
+        content["language_presentation"] = {
+            "mode": "bilingual",
+            "delivery": "same_page",
+            "logical_page_id": "P6",
+            "peer_page_id": None,
+            "pairing": "paired",
+            "pairs": [
+                {
+                    "primary": "一个品牌、一个公司",
+                    "secondary": "One Brand, One Company",
+                }
+            ],
+        }
+
+        result, _, _, content_output, _, _ = self.run_normalizer(
+            content, self.base_layout()
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        normalized = json.loads(content_output.read_text(encoding="utf-8"))
+        self.assertEqual(
+            normalized["language_presentation"],
+            content["language_presentation"],
+        )
+
+        invalid = copy.deepcopy(content)
+        invalid["language_presentation"]["pairs"][0]["secondary"] = (
+            "Unauthorized English"
+        )
+        result, *_ = self.run_normalizer(invalid, self.base_layout())
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("必须同时存在", result.stderr)
+
     def test_invalid_free_topology_is_not_mapped(self) -> None:
         layout = self.base_layout()
         layout["directions"]["A"]["spatial_topology"] = {

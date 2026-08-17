@@ -47,7 +47,7 @@ CONTENT_REQUIRED = {
     "prompt_user_constraints",
     "content_resolution",
 }
-CONTENT_ALLOWED = CONTENT_REQUIRED | set(CONTENT_VERSIONS)
+CONTENT_ALLOWED = CONTENT_REQUIRED | set(CONTENT_VERSIONS) | {"language_presentation"}
 LAYOUT_ALLOWED = {
     *LAYOUT_VERSIONS,
     "page_id",
@@ -147,6 +147,7 @@ def normalize_content(raw: dict[str, Any]) -> tuple[dict[str, Any], list[dict[st
             "not_needed|confirmed|needs_user_decision；不会猜测近义值"
         )
     require_nonempty_string(resolution.get("reason"), "content_resolution.reason")
+    pipeline.validate_language_presentation(raw, "content_contract")
     normalized = copy.deepcopy(raw)
     changes: list[dict[str, Any]] = []
     for field, fixed in CONTENT_VERSIONS.items():

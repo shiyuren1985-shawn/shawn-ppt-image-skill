@@ -2209,6 +2209,136 @@ def content_contract_prompt_locale(contract: dict[str, Any]) -> str:
     return "zh" if han_count >= 12 and han_count * 3 >= latin_count else "en"
 
 
+def validate_language_presentation(contract: dict[str, Any], context: str) -> None:
+    """Validate the optional page-level language presentation without forcing it on old runs."""
+
+    value = contract.get("language_presentation")
+    if value is None:
+        return
+    if not isinstance(value, dict):
+        raise SystemExit(f"{context} language_presentation 必须是对象")
+    mode = value.get("mode")
+    if mode not in {"source", "zh_only", "en_only", "bilingual"}:
+        raise SystemExit(
+            f"{context} language_presentation.mode 只允许 "
+            "source|zh_only|en_only|bilingual"
+        )
+    pairing = value.get("pairing", "none")
+    if pairing not in {"none", "paired", "summary"}:
+        raise SystemExit(
+            f"{context} language_presentation.pairing 只允许 none|paired|summary"
+        )
+    pairs = value.get("pairs", [])
+    if not isinstance(pairs, list):
+        raise SystemExit(f"{context} language_presentation.pairs 必须是数组")
+    authorized_signatures = {
+        normalize_signature_text(item)
+        for item in [
+            *normalize_prompt_items(contract.get("display_required") or []),
+            contract.get("title"),
+            contract.get("subtitle"),
+        ]
+        if item
+    }
+    normalized_pairs: list[tuple[str, str]] = []
+    for index, item in enumerate(pairs):
+        if not isinstance(item, dict):
+            raise SystemExit(
+                f"{context} language_presentation.pairs[{index}] 必须是对象"
+            )
+        primary = item.get("primary")
+        secondary = item.get("secondary")
+        if not isinstance(primary, str) or not primary.strip():
+            raise SystemExit(
+                f"{context} language_presentation.pairs[{index}].primary 必须是非空字符串"
+            )
+        if not isinstance(secondary, str) or not secondary.strip():
+            raise SystemExit(
+                f"{context} language_presentation.pairs[{index}].secondary 必须是非空字符串"
+            )
+        for role, text in (("primary", primary), ("secondary", secondary)):
+            if normalize_signature_text(text) not in authorized_signatures:
+                raise SystemExit(
+                    f"{context} language_presentation.pairs[{index}].{role} "
+                    "必须同时存在于 title/subtitle/display_required"
+                )
+        normalized_pairs.append((primary.strip(), secondary.strip()))
+    delivery = value.get("delivery", "single")
+    if delivery not in {"single", "same_page", "split_peer"}:
+        raise SystemExit(
+            f"{context} language_presentation.delivery 只允许 "
+            "single|same_page|split_peer"
+        )
+    logical_page_id = value.get("logical_page_id")
+    peer_page_id = value.get("peer_page_id")
+    if logical_page_id is not None and (
+        not isinstance(logical_page_id, str) or not logical_page_id.strip()
+    ):
+        raise SystemExit(f"{context} logical_page_id 必须是非空字符串")
+    if delivery == "same_page" and mode != "bilingual":
+        raise SystemExit(f"{context} same_page 必须使用 mode=bilingual")
+    if delivery == "split_peer":
+        if mode not in {"zh_only", "en_only"}:
+            raise SystemExit(
+                f"{context} split_peer 必须使用 mode=zh_only|en_only"
+            )
+        if not isinstance(logical_page_id, str) or not logical_page_id.strip():
+            raise SystemExit(f"{context} split_peer 必须提供 logical_page_id")
+        if not isinstance(peer_page_id, str) or not peer_page_id.strip():
+            raise SystemExit(f"{context} split_peer 必须提供 peer_page_id")
+        if normalize_signature_text(peer_page_id) == normalize_signature_text(
+            contract.get("page_id")
+        ):
+            raise SystemExit(f"{context} split_peer 不得指向自身")
+    elif peer_page_id not in {None, ""}:
+        raise SystemExit(f"{context} 非 split_peer 不得提供 peer_page_id")
+    if mode == "bilingual":
+        if pairing not in {"paired", "summary"} or not normalized_pairs:
+            raise SystemExit(
+                f"{context} bilingual 必须提供 pairing=paired|summary 和至少一组 pairs"
+            )
+    elif pairing != "none" or normalized_pairs:
+        raise SystemExit(
+            f"{context} 非 bilingual 页面必须使用 pairing=none 且 pairs=[]"
+        )
+
+
+def validate_language_presentation_bundle(
+    contracts: dict[str, dict[str, Any]], context: str
+) -> None:
+    """Require both isolated physical pages for every split bilingual logical page."""
+
+    split_pages: dict[str, dict[str, Any]] = {}
+    for page_id, contract in contracts.items():
+        presentation = contract.get("language_presentation")
+        if not isinstance(presentation, dict):
+            continue
+        if presentation.get("delivery") == "split_peer":
+            split_pages[str(page_id)] = presentation
+    for page_id, presentation in split_pages.items():
+        peer_page_id = str(presentation["peer_page_id"])
+        if peer_page_id not in split_pages:
+            raise SystemExit(
+                f"{context} split_peer {page_id} 缺少兄弟物理页 {peer_page_id}"
+            )
+        peer = split_pages[peer_page_id]
+        if str(peer.get("peer_page_id")) != page_id:
+            raise SystemExit(
+                f"{context} split_peer {page_id}/{peer_page_id} 必须互相引用"
+            )
+        if normalize_signature_text(peer.get("logical_page_id")) != normalize_signature_text(
+            presentation.get("logical_page_id")
+        ):
+            raise SystemExit(
+                f"{context} split_peer {page_id}/{peer_page_id} logical_page_id 不一致"
+            )
+        modes = {presentation.get("mode"), peer.get("mode")}
+        if modes != {"zh_only", "en_only"}:
+            raise SystemExit(
+                f"{context} split_peer {page_id}/{peer_page_id} 必须恰有一中一英"
+            )
+
+
 def spatial_contract_required_keys(contract: dict[str, Any]) -> list[str]:
     if uses_unified_spatial_standard(contract):
         return ["spatial_standard_version", "spatial_feasibility"]
@@ -2230,6 +2360,7 @@ def validate_dispatchable_content_contract(
     )
     if contract.get("content_contract_version") != 2:
         raise SystemExit(f"{context} 必须使用 content_contract_version=2")
+    validate_language_presentation(contract, context)
 
     prompt_version = contract.get("prompt_contract_version")
     if uses_unified_spatial_standard(contract) and prompt_version != 4:
@@ -9977,6 +10108,7 @@ def build_creative_brief_projection(
             if explicit_flexible_story
             else "display_flexible_join"
         ),
+        "language_presentation": dict(page.get("language_presentation") or {}),
         "visual_thesis": str(seed.get("visual_thesis") or "").strip(),
         "style_family_thesis": str(
             seed.get("style_family_thesis") or ""
@@ -10001,6 +10133,73 @@ def build_creative_brief_projection(
         ).strip(),
         "continuity_invariants": list(seed.get("continuity_invariants") or []),
     }
+
+
+def language_presentation_prompt(
+    page: dict[str, Any], *, use_chinese_control: bool
+) -> str:
+    """Compile a small, explicit language-layout instruction for ImageGen."""
+
+    value = page.get("language_presentation")
+    if not isinstance(value, dict):
+        return ""
+    mode = value.get("mode")
+    delivery = value.get("delivery", "single")
+    pairing = value.get("pairing", "none")
+    pairs = value.get("pairs") or []
+    if mode == "zh_only":
+        if delivery == "split_peer":
+            return (
+                "这是复杂逻辑页的中文兄弟页：只上屏本任务已授权中文。英文兄弟页另行生成；不得补入、概述或引用其英文显示文案。"
+                if use_chinese_control
+                else "This is the Chinese sibling of a split bilingual logical page. Show only the authorized Chinese copy; the English sibling is generated separately and must not leak into this image."
+            )
+        return (
+            "本页只上屏已授权中文；英文源文只用于理解，不形成英文正文或第二语言版式。"
+            if use_chinese_control
+            else "Show only the authorized Chinese copy; do not create a separate English text system."
+        )
+    if mode == "en_only":
+        if delivery == "split_peer":
+            return (
+                "这是复杂逻辑页的英文兄弟页：只上屏本任务已授权英文。中文兄弟页另行生成；不得补入、概述或引用其中文显示文案。"
+                if use_chinese_control
+                else "This is the English sibling of a split bilingual logical page. Show only the authorized English copy; the Chinese sibling is generated separately and must not leak into this image."
+            )
+        return (
+            "本页只上屏已授权英文；中文源文只用于理解，不形成中文正文或第二语言版式。"
+            if use_chinese_control
+            else "Show only the authorized English copy; do not create a separate Chinese text system."
+        )
+    if mode != "bilingual" or not pairs:
+        return ""
+    pair_lines = [
+        f"- {str(item['primary']).strip()} ⇄ {str(item['secondary']).strip()}"
+        for item in pairs
+    ]
+    if pairing == "summary":
+        intro = (
+            "本页采用克制的同页双语摘要：中文为主、英文为辅。以下英文短摘要必须贴近对应中文主结论并共享同一信息单元；不得集中成独立底栏、侧栏、第二段落系统或第二套版式。只显示列出的已授权英文，不临场补译："
+            if use_chinese_control
+            else (
+                "Use restrained same-slide bilingual summaries: Chinese is primary and English secondary. "
+                "Keep each English summary next to its Chinese statement in the same information unit; "
+                "do not create a separate footer, sidebar, paragraph system, or second layout. "
+                "Show only the listed authorized English copy and do not translate anything else:"
+            )
+        )
+    else:
+        intro = (
+            "本页采用同页双语配对：中文为主、英文为辅。以下每组中英必须就近相邻，共享同一信息单元、对齐与关系位置；不得把英文集中成独立底栏、侧栏、第二段落系统或第二套版式。只显示列出的已授权英文，不临场补译："
+            if use_chinese_control
+            else (
+                "Use paired bilingual copy on the same slide: Chinese is primary and English secondary. "
+                "Keep every pair adjacent in the same information unit, alignment, and relationship position; "
+                "do not create a separate footer, sidebar, paragraph system, or second layout. "
+                "Show only the listed authorized English copy and do not translate anything else:"
+            )
+        )
+    return intro + "\n" + "\n".join(pair_lines)
 
 
 def normalize_output_language(value: Any) -> str:
@@ -10228,6 +10427,14 @@ def compile_minimal_prompt_v4(job: dict[str, Any]) -> str:
                 if use_chinese_control
                 else "Aesthetic and finish intent: " + visual_quality_intent
             )
+        )
+    language_brief = language_presentation_prompt(
+        page, use_chinese_control=use_chinese_control
+    )
+    if language_brief:
+        sections.append(
+            ("语言呈现：" if use_chinese_control else "Language presentation: ")
+            + language_brief
         )
     if exact_items:
         if relationship_directed or art_directed:
