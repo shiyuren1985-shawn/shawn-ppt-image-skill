@@ -468,6 +468,19 @@ class FourByThreeDirectorMethodTest(unittest.TestCase):
         skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
         self.assertIn("references/4x3运行合同.md", skill)
 
+    def test_fast8_preflight_enumerates_only_current_page_required_assets(self) -> None:
+        skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
+        fast8 = (ROOT / "references" / "Fast8准备与派发.md").read_text(
+            encoding="utf-8"
+        )
+        for text in (skill, fast8):
+            self.assertIn("冻结前输入枚举", text)
+            self.assertIn("页级资产索引", text)
+            self.assertIn("不扫描其他页面", text)
+        self.assertIn("第一项状态写入", fast8)
+        self.assertIn("不启动 Director/Reviewer", fast8)
+        self.assertIn("全部必用图片", fast8)
+
     def test_new_run_does_not_reuse_director_agent_conversations(self) -> None:
         contract = (ROOT / "references" / "4x3运行合同.md").read_text(
             encoding="utf-8"
