@@ -52,6 +52,7 @@ LAYOUT_ALLOWED = {
     *LAYOUT_VERSIONS,
     "page_id",
     "director_rationale",
+    "background_tone_policy",
     "styles",
     "directions",
 }
@@ -229,6 +230,15 @@ def normalize_layout(raw: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str
     require_nonempty_string(
         normalized.get("director_rationale"), "layout_portfolio.director_rationale"
     )
+    if "background_tone_policy" in normalized:
+        # Validate the small run-level decision without changing it.
+        scratch: dict[str, Any] = {}
+        pipeline.apply_background_tone_policy(
+            scratch,
+            normalized["background_tone_policy"],
+            STYLES,
+            label="layout_portfolio.background_tone_policy",
+        )
     for style in STYLES:
         validate_style(style, styles[style])
     for field, fixed in LAYOUT_VERSIONS.items():

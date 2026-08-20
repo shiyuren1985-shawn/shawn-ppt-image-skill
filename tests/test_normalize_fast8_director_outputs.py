@@ -92,6 +92,11 @@ class NormalizeFast8DirectorOutputsTest(unittest.TestCase):
         return {
             "page_id": "P31",
             "director_rationale": "人工构造的等价 fixture，用于覆盖已观察到的容器和版本缺失。",
+            "background_tone_policy": {
+                "mode": "uniform",
+                "tone": "light",
+                "source": "primary_style_reference",
+            },
             container: styles,
         }
 
@@ -149,6 +154,10 @@ class NormalizeFast8DirectorOutputsTest(unittest.TestCase):
         self.assertEqual(normalized_layout["art_direction_contract_version"], 1)
         self.assertEqual(normalized_layout["visual_activity_portfolio_version"], 1)
         self.assertEqual(normalized_layout["spatial_topology_portfolio_version"], 1)
+        self.assertEqual(
+            normalized_layout["background_tone_policy"],
+            raw_layout["background_tone_policy"],
+        )
         for style in "ABCDEFGH":
             for field in (
                 "visual_thesis",

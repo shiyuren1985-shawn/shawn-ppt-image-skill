@@ -36,6 +36,7 @@ SELECTED_STYLE_EXPANSION_DIRS = (
 )
 TASK_INIT_CONTRACT_VERSION = 1
 FAST8_PREFLIGHT_MANIFEST_VERSION = 1
+FAST8_RASTER_ASSET_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 FAST8_STARTUP_CONTRACT_VERSION = 1
 FAST8_IMAGEGEN_SLOT_POLICY = "worker_jit_v1"
 MONITORING_CONFIG_VERSION = 1
@@ -796,6 +797,9 @@ def validate_fast8_preflight_manifest(
     raw_assets = value.get("asset_items", [])
     if not isinstance(raw_assets, list):
         raise SystemExit("Fast8 预备清单 asset_items 必须是数组")
+    source_paths = {
+        str(item["path"]) for item in [*required_files, *optional_files]
+    }
     assets: list[dict[str, object]] = []
     for index, item in enumerate(raw_assets):
         if not isinstance(item, dict):
@@ -812,6 +816,16 @@ def validate_fast8_preflight_manifest(
         resolved = resolved.resolve()
         if not resolved.is_file():
             raise SystemExit(f"Fast8 实际输入资产不存在：{resolved}")
+        if str(resolved) in source_paths:
+            raise SystemExit(
+                "Fast8 预备清单路径重复；"
+                "来源文件与实际 ImageGen 输入资产必须分开登记"
+            )
+        if resolved.suffix.lower() not in FAST8_RASTER_ASSET_SUFFIXES:
+            raise SystemExit(
+                "Fast8 实际输入资产只接受 PNG/JPG/JPEG/WEBP；"
+                f"请在冻结清单前先转换文档指定页：{resolved}"
+            )
         assets.append(
             {"path": str(resolved), "role": role.strip(), "sha256": file_sha256(resolved)}
         )

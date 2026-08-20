@@ -775,6 +775,75 @@ def tones_for_run(
     return tones
 
 
+def apply_background_tone_policy(
+    state: dict[str, Any],
+    policy: Any,
+    styles: tuple[str, ...],
+    *,
+    label: str,
+) -> bool:
+    """Apply one pre-generation background-tone decision to every seat.
+
+    Existing tone overrides without this helper's provenance are treated as an
+    earlier explicit user/preflight decision and remain authoritative.  A
+    visual Director may otherwise select either the pipeline default matrix or
+    one uniform dark/light tone, for example after inspecting a style anchor.
+    """
+
+    previous_policy = state.get("background_tone_policy")
+    existing_overrides = state.get("tone_overrides")
+    director_owned_existing = bool(
+        isinstance(previous_policy, dict)
+        and previous_policy.get("applied_by") == "visual_director"
+    )
+    if existing_overrides is not None and not director_owned_existing:
+        # Preflight/user overrides outrank the anchor-derived Director choice.
+        return False
+    if policy is None:
+        return False
+    if not isinstance(policy, dict):
+        raise SystemExit(f"{label} 必须是对象")
+    allowed = {"mode", "tone", "source"}
+    unknown = sorted(set(policy) - allowed)
+    if unknown:
+        raise SystemExit(f"{label} 包含未知字段：{', '.join(unknown)}")
+    mode = policy.get("mode")
+    source = policy.get("source")
+    tone = policy.get("tone")
+    if mode not in {"default_mixed", "uniform"}:
+        raise SystemExit(f"{label}.mode 只允许 default_mixed|uniform")
+    if source not in {
+        "pipeline_default",
+        "primary_style_reference",
+        "user_explicit",
+    }:
+        raise SystemExit(
+            f"{label}.source 只允许 pipeline_default|primary_style_reference|user_explicit"
+        )
+    if mode == "default_mixed":
+        if tone not in {None, ""} or source not in {
+            "pipeline_default",
+            "user_explicit",
+        }:
+            raise SystemExit(
+                f"{label} 使用 default_mixed 时 tone 必须为空，source 只允许 "
+                "pipeline_default|user_explicit"
+            )
+        if director_owned_existing:
+            state.pop("tone_overrides", None)
+    else:
+        if tone not in TONE_PROMPT_LABELS:
+            raise SystemExit(f"{label}.tone 在 uniform 模式下只允许 dark|light")
+        state["tone_overrides"] = {style: tone for style in styles}
+    state["background_tone_policy"] = {
+        "mode": mode,
+        "tone": tone if mode == "uniform" else None,
+        "source": source,
+        "applied_by": "visual_director",
+    }
+    return True
+
+
 def page_record(state: dict[str, Any], style: str | None, page_id: str) -> dict[str, Any]:
     try:
         if (
@@ -10231,30 +10300,51 @@ def resolve_job_language(job: dict[str, Any]) -> str:
     return normalize_output_language(job.get("language") or page.get("language"))
 
 
+def resolve_visual_artifact_kind(job: dict[str, Any], language: str) -> tuple[str, str]:
+    """Select a neutral presentation-slide or poster opening from explicit page intent."""
+
+    page = job.get("anchor_page") or {}
+    intent_text = " ".join(
+        str(value or "")
+        for value in (
+            page.get("visual_quality_intent"),
+            page.get("visual_intent"),
+            page.get("user_constraints"),
+            job.get("visual_quality_intent"),
+            job.get("user_constraints"),
+        )
+    ).lower()
+    is_poster = any(token in intent_text for token in ("海报", "poster", "zine", "节目单"))
+    if language.lower().startswith("zh"):
+        return ("16:9 横版文化海报", "16:9 商务 PPT 页面") if is_poster else ("16:9 商务 PPT 页面", "")
+    return ("16:9 horizontal cultural poster", "16:9 business presentation slide") if is_poster else ("16:9 business presentation slide", "")
+
+
 def slide_prompt_opening(job: dict[str, Any], polished: bool = False) -> str:
     quality = "complete, polished, and ready-to-use" if polished else "complete and production-ready"
     language = resolve_job_language(job)
+    artifact_kind, _legacy_kind = resolve_visual_artifact_kind(job, language)
     lowered = language.lower()
     if lowered.startswith("zh"):
         quality_zh = "完整、成熟、精致、可直接使用" if polished else "完整、成品级"
         return (
-            f"生成{quality_zh}的 16:9 商务 PPT 页面；页面文字使用中文。"
+            f"生成{quality_zh}的 {artifact_kind}；页面文字使用中文。"
             "逐字保留必显文案，不翻译、不补充其他语言标签。"
         )
     if lowered.startswith("en"):
         return (
-            f"Create a {quality} 16:9 business presentation slide. "
+            f"Create a {quality} {artifact_kind}. "
             "All on-slide copy must be in English. Reproduce the required copy exactly; "
             "do not translate it or add labels in another language."
         )
     if lowered in {"source", "mixed", "multilingual"}:
         return (
-            f"Create a {quality} 16:9 business presentation slide. "
+            f"Create a {quality} {artifact_kind}. "
             "Use exactly the language or languages present in the required on-slide copy. "
             "Do not translate the copy or add labels in another language."
         )
     return (
-        f"Create a {quality} 16:9 business presentation slide. "
+        f"Create a {quality} {artifact_kind}. "
         f"All on-slide copy must use {language}. Reproduce the required copy exactly; "
         "do not translate it or add labels in another language."
     )
@@ -10265,30 +10355,31 @@ def slide_prompt_opening_v4(job: dict[str, Any], has_exact_copy: bool) -> str:
 
     quality = "complete, polished, and ready-to-use"
     language = resolve_job_language(job)
+    artifact_kind, _legacy_kind = resolve_visual_artifact_kind(job, language)
     lowered = language.lower()
     if lowered.startswith("zh"):
         exact_note = "逐字保留指定文案，" if has_exact_copy else ""
         return (
-            "生成完整、成熟、精致、可直接使用的 16:9 商务 PPT 页面；页面文字使用中文。"
+            f"生成完整、成熟、精致、可直接使用的 {artifact_kind}；页面文字使用中文。"
             f"{exact_note}不翻译、不补充其他语言标签。"
         )
     if lowered.startswith("en"):
         exact_note = " Reproduce the specified exact copy verbatim;" if has_exact_copy else ""
         return (
-            f"Create a {quality} 16:9 business presentation slide. "
+            f"Create a {quality} {artifact_kind}. "
             f"All on-slide copy must be in English.{exact_note} "
             "do not translate it or add labels in another language."
         )
     if lowered in {"source", "mixed", "multilingual"}:
         exact_note = " Reproduce the specified exact copy verbatim." if has_exact_copy else ""
         return (
-            f"Create a {quality} 16:9 business presentation slide. "
+            f"Create a {quality} {artifact_kind}. "
             "Use exactly the language or languages present in the required on-slide copy. "
             f"Do not translate the copy or add labels in another language.{exact_note}"
         )
     exact_note = " Reproduce the specified exact copy verbatim;" if has_exact_copy else ""
     return (
-        f"Create a {quality} 16:9 business presentation slide. "
+        f"Create a {quality} {artifact_kind}. "
         f"All on-slide copy must use {language}.{exact_note} "
         "do not translate it or add labels in another language."
     )
